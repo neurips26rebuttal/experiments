@@ -87,7 +87,6 @@ def diag_weights_from_mc_row_sums(
     p=1.0,
     mode="down",
     batch_rows=8192,
-    seed=None,
     estimator="mc",
 ):
     """Diagonal weights from row sums of the normalised frame.
@@ -108,13 +107,8 @@ def diag_weights_from_mc_row_sums(
     if estimator == "exact":
         u_hat = A.sum(dim=0)
     elif estimator == "mc":
-        g = None
-        if seed is not None:
-            g = torch.Generator(device=A.device)
-            g.manual_seed(seed)
-
         m = min(num_j, N)
-        J = torch.randint(0, N, (m,), device=A.device, generator=g)
+        J = torch.randint(0, N, (m,), device=A.device)
 
         u_hat = (N / m) * A[J].sum(dim=0)
     else:
@@ -247,5 +241,3 @@ def project_factorized_2d(
     proj_2d = torch.einsum("ip,kpq,jq->kij", U, z_proj, U)
 
     return proj_2d.real.reshape(K, H * W), lam
-
-

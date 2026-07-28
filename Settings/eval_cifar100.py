@@ -16,7 +16,7 @@ Usage (one case per run):
     python eval_cifar100.py --case case6 --advdrop-steps 150   # AdvDrop baseline
 
     # Quick test
-    python eval_cifar100.py --case case1 --num-samples 10000
+    python eval_cifar100.py --case case1 --num-samples 100
 """
 
 import csv
@@ -32,6 +32,7 @@ from tqdm import tqdm
 import os
 import argparse
 import json
+import time
 from typing import Dict, List
 
 # Import attack and metrics classes
@@ -159,13 +160,13 @@ def parse_args():
 
     # Attack parameters
     parser.add_argument(
-        "--epsilon", type=float, default=8 / 255, help="Attack epsilon (Linf norm)"
+        "--epsilon", type=float, default=32 / 255, help="Attack epsilon (L2 norm)"
     )
     parser.add_argument("--gamma", type=float, default=None,
                         help="Step size")
     parser.add_argument("--num-steps", type=int, default=10, help="PGD iterations")
     parser.add_argument(
-        "--tau", type=float, default=0.1, help="Soft-thresholding parameter (Case 1)"
+        "--tau", type=float, default=0.1, help="Soft-thresholding parameter (Case 1) - DEPRECATED - ignored, kept for backwards compatibility"
     )
     parser.add_argument("--a", type=int, default=1, help="Time lattice parameter")
     parser.add_argument("--b", type=int, default=16, help="Frequency lattice parameter")
@@ -289,7 +290,6 @@ def parse_args():
 
     # Other
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"])
-    parser.add_argument("--seed", type=int, default=None, help="Random seed")
     parser.add_argument("--verbose", action="store_true", help="Verbose output")
 
     args = parser.parse_args()
@@ -1900,7 +1900,6 @@ def main():
         "batch_size": args.batch_size,
         "timing": args.timing, "amp": not args.no_amp,
         "timing_warmup": args.timing_warmup if args.timing else 0,
-        "seed": args.seed,
         "warmup_batches": 0 if args.timing else args.warmup_batches,
         "num_samples": args.num_samples,
         # attack hyperparameters so bin/report_cost.py can derive the model-pass
@@ -2034,12 +2033,15 @@ def main():
         # these into runtime_<dataset>_<accel>.{json,csv} at the root.
         # "timing" in the name so a batch-size-1 cost run can never be folded
         # into a production run's totals by the aggregator
+        # start time + pid in the name because repeat local passes are otherwise
+        # identical: without them three runs collide on 'local_0' and the last
+        # one wins
         rt_name = (f"runtime_cifar100_{args.case}_{args.model_source}"
                    f"{'_timing' if args.timing else ''}"
                    f"_{rt.env['accelerator']}"
                    f"_{rt.env.get('slurm_job_id') or 'local'}"
                    f"_{rt.env.get('slurm_array_task_id') or '0'}"
-                   f"_s{args.seed}.json")
+                   f"_{time.strftime('%Y%m%d-%H%M%S')}_{os.getpid()}.json")
         rt_dir = args.runtime_dir or os.path.join(args.output_dir, "runtime")
         rt_path = rt.write(rt_dir, rt_name)
         rt.print_summary()

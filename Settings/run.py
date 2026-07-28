@@ -56,17 +56,11 @@ RUNTIME_DIR = "./results/runtime"    # REPO_ROOT, so these resolve inside it
 
 NUM_SAMPLES = 5000     # test images attacked per run, switch to 10000 for CIFAR100
 NUM_WORKERS = 10       # dataloader workers
-SEED = None             # every eval seeds torch/numpy/random with this
 LPIPS_NET = "alex"     # perceptual-distance backbone used by the metrics
 
-# DGF-PGD step size, in the SAME units as eps_dgf: every step advances the
-# iterate by exactly GAMMA in the M_D-norm. 0.1 is the original implementation's
-# absolute value, which src/eval_*.py also resolve to when --gamma is omitted --
-# passed explicitly here so the number is stated rather than inherited.
 GAMMA = 0.1
 
-# Soft-thresholding parameter for case 1. CIFAR-100 only: eval_imagenet.py has
-# no --tau (its case-1 path does not threshold).
+# deprecated parameter, kept for backwards compatibility
 TAU = 0.1
 
 
@@ -394,7 +388,6 @@ def imagenet_command(spec, family):
             "--num-samples", str(NUM_SAMPLES),
             "--batch-size", str(spec["batch"][family]),
             "--num-workers", str(NUM_WORKERS),
-            "--seed", str(SEED),
             "--lpips-net", LPIPS_NET,
             "--num-images", str(IMAGENET_NUM_IMAGES),
             "--save-heatmaps"]
@@ -420,7 +413,6 @@ def cifar_command(spec, source):
             "--num-samples", str(NUM_SAMPLES),
             "--batch-size", str(spec["batch"][source]),
             "--num-workers", str(NUM_WORKERS),
-            "--seed", str(SEED),
             "--lpips-net", LPIPS_NET]
     return cmd + spec["extra"]
 

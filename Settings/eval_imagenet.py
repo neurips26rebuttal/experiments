@@ -27,6 +27,7 @@ from tqdm import tqdm
 import os
 import argparse
 import json
+import time
 from contextlib import contextmanager
 from typing import Dict
 import pandas as pd
@@ -296,14 +297,13 @@ def parse_args():
                         help="ImageNet root containing val/ (default: the "
                              "repo's data/imagenet)")
     parser.add_argument("--batch-size", type=int, default=16)
-    parser.add_argument("--num-samples", type=int, default=1000)
+    parser.add_argument("--num-samples", type=int, default=5000)
     parser.add_argument("--num-workers", type=int, default=4)
 
     parser.add_argument("--epsilon", type=float, required=True,
                         help="Perturbation budget (e.g. 8/255 = 0.03137)")
     parser.add_argument("--gamma", type=float, default=None,
-                        help="Absolute step size in the M_D-norm. Default None "
-                             "resolves to the original implementation's 0.1.")
+                        help="Step size")
     parser.add_argument("--num-steps", type=int, default=20,
                         help="Number of PGD steps (K)")
     parser.add_argument("--a", type=int, default=1)
@@ -389,7 +389,6 @@ def parse_args():
         "are measured (--timing only)")
 
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"])
-    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--verbose", action="store_true")
 
     args = parser.parse_args()
@@ -1248,8 +1247,6 @@ def _run_transferability_split(robust_models, standard_models, attacker,
 
 def main():
     args = parse_args()
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
 
     if args.device == "cuda" and not torch.cuda.is_available():
         print("WARNING: CUDA not available, using CPU")
@@ -1292,7 +1289,6 @@ def main():
         "epsilon": epsilon, "batch_size": args.batch_size,
         "timing": args.timing, "amp": not args.no_amp,
         "timing_warmup": args.timing_warmup if args.timing else 0,
-        "seed": args.seed,
         "warmup_batches": 0 if args.timing else args.warmup_batches,
         "num_samples": args.num_samples,
         "ssa_N": args.ssa_N, "ssa_steps": args.ssa_steps,
@@ -1477,12 +1473,14 @@ def main():
     case_tag = "case" + "-".join(str(c) for c in args.attack_case)
     # "timing" in the name so a batch-size-1 cost run can never be folded into
     # a production run's totals by the aggregator
+    # start time + pid in the name because repeat local passes are otherwise
+    # identical: without them three runs collide on 'local_0' and the last wins
     rt_name = (f"runtime_imagenet_{case_tag}"
                f"{'_timing' if args.timing else ''}"
                f"_{rt.env['accelerator']}"
                f"_{rt.env.get('slurm_job_id') or 'local'}"
                f"_{rt.env.get('slurm_array_task_id') or '0'}"
-               f"_s{args.seed}"
+               f"_{time.strftime('%Y%m%d-%H%M%S')}_{os.getpid()}"
                f"_{eps_tag}.json")
     rt_dir = args.runtime_dir or os.path.join(args.output_dir, "runtime")
     rt_path = rt.write(rt_dir, rt_name)

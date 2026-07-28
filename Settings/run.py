@@ -4,11 +4,6 @@
     python3 run.py              # the whole sweep
     python3 run.py --dry-run    # print the 24 eval commands, execute none
 
-There are no case, dataset or model flags. Every parameter of every method is
-pinned as a constant below, so what this script runs is fully determined by
-reading it -- there is no manifest CSV, no row index, and no way for a stale
-config file to change the numbers.
-
 Four steps:
 
   1. models   -> ./models        every weight the eval scripts can load
@@ -59,9 +54,9 @@ RUNTIME_DIR = "./results/runtime"    # REPO_ROOT, so these resolve inside it
 # Pinned parameters -- shared
 # ============================================================================
 
-NUM_SAMPLES = 1000     # test images attacked per run
+NUM_SAMPLES = 5000     # test images attacked per run, switch to 10000 for CIFAR100
 NUM_WORKERS = 10       # dataloader workers
-SEED = 42              # every eval seeds torch/numpy/random with this
+SEED = None             # every eval seeds torch/numpy/random with this
 LPIPS_NET = "alex"     # perceptual-distance backbone used by the metrics
 
 # DGF-PGD step size, in the SAME units as eps_dgf: every step advances the

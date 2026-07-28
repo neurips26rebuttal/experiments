@@ -1,23 +1,6 @@
 """
 Aggregate all results.json files under a results directory into a single CSV.
 
-eval_imagenet.py writes one results.json per (group, case, epsilon, hparams)
-combination, laid out as:
-
-    <root>/transferability/<group>/<case>/<eps_tag>/<hp...>/results.json
-
-where <hp...> is a nested path whose shape depends on the case:
-
-    case1          a{a}_b{b}/{window}/gamma{g}/steps{n}
-    case2, case3   steps{n}
-    case4          aa_{version}_{norm}
-
-Each results.json holds a nested {source_model: {target_model: {metric: value}}}
-mapping, so this script emits ONE ROW PER (source, target) PAIR.
-
-If an attack_stats.json sits next to results.json (case 1 only) its per-source
-Gabor-frame diagnostics are merged onto every row for that source.
-
 Usage:
     python3 src/aggregate_results.py
     python3 src/aggregate_results.py --results-dir ./results/imagenet

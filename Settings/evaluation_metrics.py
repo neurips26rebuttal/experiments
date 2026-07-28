@@ -1,17 +1,5 @@
 """
 Simplified Evaluation Metrics for Adversarial Attacks
-======================================================
-
-Computes essential metrics for adversarial examples:
-- Classification metrics: clean_accuracy, adversarial_accuracy, attack_success_rate
-- Perturbation metrics: L2, L∞, Gabor frame norm (mean + std)
-- Perceptual metrics: LPIPS, SSIM, PSNR (mean + std)
-
-Usage:
-    from evaluation_metrics import AdversarialMetrics
-    
-    evaluator = AdversarialMetrics(device='cuda', M=M, D=D)
-    metrics = evaluator.compute_all_metrics(model, x_clean, x_adv, y_true)
 """
 
 import torch
@@ -36,15 +24,6 @@ except ImportError:
 class AdversarialMetrics:
     """
     Simplified adversarial attack evaluation metrics
-    
-    Essential Metrics:
-    - clean_accuracy: Accuracy on clean images
-    - adversarial_accuracy: Accuracy on adversarial images
-    - attack_success_rate: Percentage of successful attacks
-    - mean_l2_norm, std_l2_norm: L2 perturbation norm
-    - mean_linf_norm, std_linf_norm: L∞ perturbation norm
-    - lpips_mean, lpips_std: LPIPS perceptual distance
-    - ssim_mean, ssim_std: SSIM structural similarity
     """
 
     def __init__(
@@ -55,11 +34,6 @@ class AdversarialMetrics:
     ):
         """
         Initialize metrics evaluator
-
-        Args:
-            device: Device to use ('cuda' or 'cpu')
-            lpips_net: LPIPS network ('alex', 'vgg', or 'squeeze')
-            verbose: Print warnings for missing libraries
         """
         self.device = device
         self.verbose = verbose
@@ -87,12 +61,6 @@ class AdversarialMetrics:
     ) -> Dict[str, float]:
         """
         Compute classification accuracy metrics
-        
-        Returns:
-            clean_accuracy: Accuracy on clean images
-            adversarial_accuracy: Accuracy on adversarial images
-            attack_success_rate: # successful adversarial examples / # total adversarial examples
-                                 where successful = model misclassifies the adversarial example
         """
         model.eval()
         with torch.no_grad():
@@ -123,11 +91,6 @@ class AdversarialMetrics:
     ) -> Dict[str, float]:
         """
         Compute perturbation norms: L2, L∞, and Gabor frame norm
-        
-        Returns:
-            mean_l2_norm, std_l2_norm
-            mean_linf_norm, std_linf_norm
-            mean_gabor_frame_norm, std_gabor_frame_norm
         """
         perturbation = x_adv - x_clean
         B = perturbation.shape[0]
@@ -155,16 +118,9 @@ class AdversarialMetrics:
     ) -> Dict[str, float]:
         """
         Compute perceptual metrics: LPIPS, SSIM and PSNR
-
-        Returns:
-            lpips_mean, lpips_std
-            ssim_mean, ssim_std
-            psnr_mean, psnr_std
         """
         metrics = {}
 
-        # PSNR (dB), images in [0,1]. MSE floor keeps an identical pair
-        # (mse=0) at a finite 120 dB instead of poisoning the batch mean.
         with torch.no_grad():
             mse = (x_adv - x_clean).pow(2).flatten(1).mean(dim=1)
             psnr_values = 10.0 * torch.log10(1.0 / mse.clamp_min(1e-12))
@@ -217,17 +173,6 @@ class AdversarialMetrics:
     ) -> Dict[str, float]:
         """
         Compute all metrics
-        
-        Returns dictionary with:
-        - clean_accuracy
-        - adversarial_accuracy
-        - attack_success_rate
-        - mean_l2_norm, std_l2_norm
-        - mean_linf_norm, std_linf_norm
-        - mean_gabor_frame_norm, std_gabor_frame_norm
-        - lpips_mean, lpips_std
-        - ssim_mean, ssim_std
-        - psnr_mean, psnr_std
         """
         metrics = {}
 

@@ -1,42 +1,4 @@
 """Wall-clock accounting for the attack evaluations, shared by both datasets.
-
-Imported by eval_imagenet.py and eval_cifar100.py so their cost numbers are
-measured the same way and land in the same schema. bin/build_cost_matrix.py turns
-the emitted JSON into one dataset x phase matrix per method, with the accelerator
-in the filename.
-
-Phases are deliberately coarse and non-overlapping:
-
-    load     building/loading models and the Gabor operators
-    attack   generating adversarial examples -- the number the paper reports
-    metrics  LPIPS/SSIM/PSNR and the transferability sweep
-    other    total minus the three above (I/O, checkpointing, image dumps)
-
-CUDA is asynchronous, so every phase boundary synchronises. Without that the
-timings measure kernel *launch*, not kernel *execution*, and the attack phase
-looks ~free while some later phase absorbs its cost.
-
-Both eval scripts bracket the SAME work: only the attacker call itself is
-inside the `attack` phase. Data loading, host<->device copies and the
-concatenation of the results are outside it, on both datasets, so the two
-per-sample columns are directly comparable.
-
---timing mode (per_sample=True) additionally records the duration of every
-individual bracket instead of only the running total. It is meant to be used
-with batch size 1, where one bracket is exactly one image, and it turns
-attack_ms_per_sample from a ratio of two aggregates into a measured
-distribution: mean, median, std, min, max and p95, broken down per source
-model, with the raw list kept so downstream tools can recompute anything.
-
-Passing `n=` to phase() records the SAME bracket normalised to ms per sample
-(dt/n), in every mode. That is what gives an ordinary batched run a median and
-a standard deviation instead of the single ratio attack_ms_per_sample: at batch
-size 20 over 200 samples there are ten brackets, so ten measurements of the
-per-sample cost. It lands in by_source[src]["ms_per_sample_stats"] and is
-DELIBERATELY not folded into the per_sample block above -- bin/report_cost.py
-and src/aggregate_run.py read per_sample.raw_ms as per-IMAGE durations without
-checking timing_mode, so putting per-batch numbers there would silently report
-a batch's milliseconds as an image's.
 """
 from __future__ import annotations
 
@@ -55,10 +17,6 @@ PHASES = ("load", "attack", "metrics")
 
 def stats_ms(values):
     """Exact summary of a list of per-sample durations in milliseconds.
-
-    Nearest-rank percentile, population (not sample) standard deviation: these
-    are the timings of every sample that ran, not a sample drawn from a larger
-    population, so there is nothing to correct for.
     """
     if not values:
         return None
@@ -90,10 +48,6 @@ def _sync(device):
 
 def accelerator_tag():
     """Short tag for the accelerator: 'h100', 'a100', 'v100', ... else 'cpu'.
-
-    Read from the device name first because that is ground truth for what the
-    job actually landed on; SLURM_JOB_CONSTRAINT/partition are only what was
-    *requested* and can differ (e.g. gpu_p6 hosts more than one card type).
     """
     name = ""
     try:
@@ -122,18 +76,9 @@ class RuntimeLog:
         self.t0 = time.perf_counter()
         self.records = {}          # method -> {phase -> seconds}
         self.samples = {}          # method -> n samples attacked
-        # The same seconds and counts, kept per SOURCE MODEL. Filled in every
-        # mode, not just --timing: a run over a roster of N models attacks each
-        # of them in its own bracket, so the split already exists and throwing
-        # it away was what forced one SLURM job per model to get a per-model
-        # cost. Totals above are unchanged -- these are a decomposition of them.
         self.records_src = {}      # method -> phase -> source -> seconds
         self.samples_src = {}      # method -> source -> n samples
-        # method -> phase -> source model -> [ms, ...]; only filled in --timing
         self.per_sample = {}
-        # The same brackets normalised to ms PER SAMPLE (dt/n), filled whenever
-        # phase() is given n=. Separate from per_sample because that block is
-        # read elsewhere as per-image durations; these are per-batch means.
         self.per_batch = {}
         self.timing = bool(timing)
         self.meta = dict(meta or {})
@@ -165,19 +110,7 @@ class RuntimeLog:
 
     @contextmanager
     def phase(self, method, name, per_sample=False, source=None, n=None):
-        """Time a phase. Re-entrant across calls: seconds accumulate.
-
-        per_sample -- also keep this individual bracket's duration, not just
-        add it to the running total. Only meaningful when the bracket holds
-        exactly ONE sample, which is what --timing (batch size 1) guarantees;
-        the eval scripts pass per_sample=args.timing so a normal run behaves
-        and writes exactly as before.
-        source -- which model produced the sample, so the per-image cost of a
-        ResNet-18 is never silently averaged into a WideResNet's.
-        n -- how many samples this bracket covers. Records dt/n, giving the
-        per-sample cost a spread (median/std) in ordinary batched runs rather
-        than the single aggregate ratio. Pass the batch size.
-        """
+        """Time a phase. Re-entrant across calls: seconds accumulate."""
         if name not in PHASES:
             raise ValueError(f"unknown phase {name!r}, expected one of {PHASES}")
         _sync(self.device)
@@ -185,8 +118,6 @@ class RuntimeLog:
         try:
             yield
         finally:
-            # timed even when the body raises, so a crashed run still accounts
-            # for the work it did rather than silently reporting zero
             _sync(self.device)
             dt = time.perf_counter() - t
             self.records.setdefault(method, {}).setdefault(name, 0.0)
@@ -204,10 +135,6 @@ class RuntimeLog:
 
     def add_samples(self, method, n, source=None):
         """Count attacked samples; `source` also credits them to that model.
-
-        Without the source the run can only ever report a roster average --
-        seconds are per model but the denominator would not be, so the two
-        could not be divided.
         """
         self.samples[method] = self.samples.get(method, 0) + int(n)
         if source:
@@ -216,23 +143,9 @@ class RuntimeLog:
 
     def discard_warmup(self, method, source=None):
         """Drop everything recorded so far for (method, source): the warm-up.
-
-        The first samples of a run pay for cuDNN autotuning, lazy CUDA context
-        creation and allocator growth. At batch size 1 there are no other
-        samples in the batch to amortise that over, so the first image can read
-        several times the steady-state cost. The eval scripts therefore run the
-        first --timing-warmup images through the real measured path and then
-        call this to throw the numbers away.
-
-        Seconds are SUBTRACTED from the phase totals rather than zeroed, so
-        `measured`, n_samples and the per-sample statistics keep describing the
-        same set of samples. Only usable while per-sample recording is on --
-        without the raw list there is no way to know what to subtract.
         """
         key = source or "all"
         dropped = 0
-        # the normalised copies describe the same brackets, so they have to go
-        # too or the median would still be summarising the warm-up
         for by_src in (self.per_batch.get(method) or {}).values():
             by_src.pop(key, None)
         for ph, by_src in (self.per_sample.get(method) or {}).items():
@@ -241,8 +154,6 @@ class RuntimeLog:
                 continue
             self.records[method][ph] = max(
                 0.0, self.records[method][ph] - sum(vals) / 1000.0)
-            # the per-source decomposition has to lose exactly the same
-            # seconds, or it would stop summing to the total it decomposes
             src_ph = (self.records_src.get(method) or {}).get(ph)
             if src_ph and key in src_ph:
                 src_ph[key] = max(0.0, src_ph[key] - sum(vals) / 1000.0)
@@ -257,7 +168,6 @@ class RuntimeLog:
     def _per_sample_block(self, method):
         """{phase: overall stats, by_source: {phase: {src: stats}}} or None."""
         ps = self.per_sample.get(method) or {}
-        # a source whose samples were all discarded leaves an empty list behind
         ps = {ph: {s: v for s, v in by_src.items() if v}
               for ph, by_src in ps.items()}
         ps = {ph: by_src for ph, by_src in ps.items() if by_src}
@@ -275,20 +185,6 @@ class RuntimeLog:
 
     def _by_source_block(self, method):
         """{source: {phase seconds, n_samples, attack_ms_per_sample}} or None.
-
-        Present in ordinary batched runs too, which is what lets ONE job over a
-        roster of N models report N per-model costs instead of a single roster
-        average. The seconds here sum to the method's totals; the per-sample
-        figure is that model's own attack seconds over its own samples, at the
-        run's batch size -- batch-amortised, exactly like the total, so the two
-        are the same kind of number.
-
-        ms_per_sample_stats is that same quantity as a DISTRIBUTION over the
-        model's attack brackets (one per batch), present whenever the eval
-        script passed n= to phase(). Its mean equals attack_ms_per_sample only
-        when every batch is full; the last batch is usually short, so the two
-        differ slightly by construction and the ratio remains the figure to
-        quote for a total. The median and std are what this block adds.
         """
         phases = self.records_src.get(method) or {}
         counts = self.samples_src.get(method) or {}
@@ -335,8 +231,6 @@ class RuntimeLog:
             "env": self.env,
             "meta": self.meta,
             "timing_mode": self.timing,
-            # 'other' is only meaningful for the run as a whole: it is whatever
-            # wall-clock the phases did not claim (I/O, image dumps, teardown).
             "total_wall_s": round(total_wall, 6),
             "other_s": round(max(0.0, total_wall - sum(
                 sum(p.get(k, 0.0) for k in PHASES) for p in self.records.values())), 6),

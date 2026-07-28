@@ -1,8 +1,5 @@
 """
-ImageNet Adversarial Attack Evaluation — Fixed Hyperparameters
-==============================================================
-Runs case 1-6 with hyperparameters supplied as CLI arguments.
-Produces 20 spectrogram samples per model. No hparam sweeping.
+ImageNet Adversarial Attack Evaluation 
 
 Attack cases:
   --attack-case 1    DGF-PGD (Gabor frame, proposed)
@@ -154,13 +151,6 @@ def _rtlog(args):
 @contextmanager
 def _rng_preserved():
     """Restore every RNG on exit, so the block inside changes no result.
-
-    The warm-up below runs the REAL attack, and several attacks draw randoms
-    (cases 1/2 pass random_init=True on cifar, AutoAttack restarts, SSA's
-    Gaussian noise). Without this the warm-up would advance the streams and
-    every adversarial example after it would differ from the same run without
-    warm-up -- which would break the bit-for-bit baseline parity that cases 5
-    and 6 are held to.
     """
     cpu = torch.get_rng_state()
     cuda = (torch.cuda.get_rng_state_all()
@@ -179,28 +169,8 @@ def _rng_preserved():
 
 def warmup_attack(fn, args, source=None):
     """Run the attack `--warmup-batches` times, timed by nothing, then discard.
-
-    The first batch a model sees pays for cuDNN autotuning, lazy CUDA context
-    creation and allocator growth. In --timing mode that cost is removed by
-    running warm-up IMAGES through the measured path and subtracting them
-    afterwards (_timing_discard). An ordinary batched run has no such
-    mechanism, so before this the whole warm-up landed inside the first timed
-    bracket -- and, on the first model of a roster, dominated it: on the
-    18-model ImageNet sweep alexnet (the cheapest model there is) reported
-    28.86 ms/sample against resnet18's 5.12, because its first batch alone was
-    5.0s of its 5.772s total.
-
-    Running the real attack rather than a bare forward is deliberate: it is the
-    only way to touch every kernel the measured path will use. `fn` is a
-    zero-argument thunk so each call site passes its own signature (case 4
-    calls AutoAttack, case 1 returns three values, the rest two).
-
-    Nothing here is recorded: no rt.phase, no add_samples. The warm-up is
-    outside the measurement by construction rather than subtracted from it.
     """
     n = int(getattr(args, "warmup_batches", 0) or 0)
-    # --timing has its own warm-up (measured, then subtracted by
-    # _timing_discard). Doing both would warm twice and measure neither better.
     if n <= 0 or getattr(args, "timing", False):
         return
     with _rng_preserved():
@@ -222,11 +192,6 @@ def _sync_device(device):
 
 def _timing_discard(rt, method, source, batch_idx, args):
     """Drop the warm-up images once they are behind us (--timing only).
-
-    Called at the end of every batch body so the warm-up goes through the exact
-    same code path as a measured image rather than through a separate dry-run
-    branch that could end up warming something else. Shared with
-    eval_cifar100.py so both datasets discard identically.
     """
     if not getattr(args, "timing", False) or args.timing_warmup <= 0:
         return
@@ -238,14 +203,6 @@ def _timing_discard(rt, method, source, batch_idx, args):
 
 def resolve_gamma(args):
     """Step size for the ascent, returned together with a human-readable reason.
-
-    Every DGF-PGD step advances the iterate by EXACTLY gamma in the M_D-norm, so
-    after k steps ||delta||_M <= k*gamma. gamma therefore lives in the SAME units
-    as eps_dgf: an absolute value is only meaningful next to a known eps_dgf,
-    which is what warn_if_constraint_inert() reports.
-
-    The original implementation used the absolute 0.1, which is what an omitted
-    --gamma still resolves to.
     """
     if args.gamma is not None:
         return float(args.gamma), "absolute (--gamma)"
@@ -253,13 +210,6 @@ def resolve_gamma(args):
 
 
 def warn_if_constraint_inert(gamma, num_steps, eps_scale, epsilon, why):
-    """Loudly flag a configuration in which the DGF constraint can never bind.
-
-    If num_steps*gamma < eps_dgf the projection never activates and case 1
-    degenerates to unconstrained preconditioned ascent under the [0,1] clamp --
-    the perceptual budget stops being a budget. That produces numbers that look
-    like a weak attack rather than like a misconfiguration, so it must be noisy.
-    """
     eps_dgf = eps_scale * epsilon
     reach = num_steps * gamma
     print(f"  eps_scale={eps_scale:.6g}  eps={epsilon:.6g}  eps_dgf={eps_dgf:.6g}")
@@ -359,51 +309,24 @@ def parse_args():
 
     # Timing
     parser.add_argument(
-        "--no-amp", action="store_true",
-        help="Run case1's model call in fp32 instead of bf16 autocast "
-        "(src/dgf_pgd.py:102). Cases 2/3 and the vendored baselines are "
-        "already fp32, so the DEFAULT times the proposed method under a "
-        "faster precision than everything it is compared against; pass this "
-        "for a precision-matched cost comparison. No effect on cases 2-6.")
+        "--no-amp", action="store_true")
     parser.add_argument(
-        "--timing", action="store_true",
-        help="Cost-measurement mode: force batch size 1 so one timed bracket "
-        "is exactly one image, record every sample individually (mean/median/"
-        "std/min/max/p95 per source model, plus the raw list) and discard "
-        "--timing-warmup images first. Measures the same work as "
-        "eval_cifar100.py --timing, so the two per-image columns are "
-        "comparable.")
+        "--timing", action="store_true")
     parser.add_argument(
-        "--warmup-batches", type=int, default=1,
-        help="Batches run through the real attack and thrown away before the "
-        "timed loop starts, once per source model, so cuDNN autotuning and "
-        "lazy CUDA init never land in a measured bracket. Costs one batch of "
-        "wall-clock per model and changes no result: every RNG is restored "
-        "afterwards. 0 restores the old (contaminated) behaviour. Ignored "
-        "under --timing, which discards measured warm-up images instead.")
+        "--warmup-batches", type=int, default=1)
     parser.add_argument(
-        "--timing-warmup", type=int, default=5,
-        help="Images run through the real measured path and then thrown away, "
-        "so cuDNN autotuning and lazy CUDA init never land in a kept sample. "
-        "--num-samples is raised by this much so exactly --num-samples images "
-        "are measured (--timing only)")
+        "--timing-warmup", type=int, default=5)
 
     parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"])
     parser.add_argument("--verbose", action="store_true")
 
     args = parser.parse_args()
 
-    # One bracket must hold exactly one image or the per-sample distribution is
-    # a distribution over batches. Forced, not merely defaulted: a --batch-size
-    # inherited from the manifest would otherwise silently invalidate the run.
     if args.timing:
         if args.batch_size != 1:
             print(f"[timing] forcing --batch-size 1 (was {args.batch_size})")
         args.batch_size = 1
         args.timing_warmup = max(0, args.timing_warmup)
-        # The run directory gets a "_timing" suffix (in _group_dir) so a
-        # batch-size-1 cost run cannot overwrite a 1000-sample result with a
-        # 200-sample one.
     return args
 
 
@@ -425,9 +348,6 @@ def load_imagenet(args):
     testset = torchvision.datasets.ImageFolder(val_dir, transform=transform)
     print(f"  Found {len(testset)} images in {len(testset.classes)} classes")
 
-    # --timing loads the warm-up images ON TOP of what was asked for, so
-    # "--timing --num-samples 200" measures 200 images rather than 200 minus
-    # whatever the warm-up consumed.
     n_want = args.num_samples
     if n_want is not None and getattr(args, "timing", False):
         n_want += args.timing_warmup
@@ -450,8 +370,6 @@ def load_imagenet(args):
 
 def load_standard_pretrained_models(args):
     print("\nLoading standard pretrained ImageNet models...")
-    # Weights come from the repo-local hub cache (models/torch_hub), populated
-    # in advance by src/download_models.py -- compute nodes have no internet.
     hub = paths.point_torch_hub(args.models_dir)
     print(f"  torch.hub cache: {hub}")
     builders = {
@@ -477,10 +395,6 @@ def load_standard_pretrained_models(args):
         'wide_resnet50_2':    lambda: tv_models.wide_resnet50_2(weights=tv_models.Wide_ResNet50_2_Weights.IMAGENET1K_V1),
     }
     target_names = args.models if args.models else list(builders.keys())
-    # An explicitly requested name that does not exist is a manifest typo, and
-    # skipping it silently would let a per-model cost row measure a DIFFERENT
-    # model (or nothing) under the name the table will print. Only the implicit
-    # "every builder" roster is allowed to skip.
     if args.models:
         unknown = [n for n in args.models if n not in builders]
         if unknown:
@@ -584,15 +498,6 @@ def load_imagenet_models(args):
 
 def generate_gabor_operators(device, a, b, image_size=224, window_type="Hann"):
     """Build the Gabor operators exactly as the original implementation does.
-
-    D comes from the Monte-Carlo row-sum estimate drawn from the global RNG, so
-    D depends on how much randomness model construction consumed first.
-
-    M = Psi^H D^-1 Psi: the original code called weights1() with D already
-    inverted in place, and D_inv_1 is built from the same D, so M and D_inv_1
-    coincide. eps_scale is exp(mean(log mu^2)/(2n)) times the volume prefactor,
-    which measures as the constant ~108.42 at 224x224 -- the exp() term is
-    0.9997, so eps_dgf carries essentially no information about M.
     """
     print(f"\nGenerating Gabor operators: a={a}, b={b}, window={window_type}, size={image_size}")
     H = image_size
@@ -609,8 +514,6 @@ def generate_gabor_operators(device, a, b, image_size=224, window_type="Hann"):
     D_2D = diag_weights_from_mc_row_sums(Psi_2D, mode="down")
 
     D_inv_1_2D = dual_norm1(D_2D, Psi_2D)
-    # Bit-for-bit reproduction of the original in-place D.pow_(-1) side effect:
-    # weights1 received D^-1, making M identical to D_inv_1_2D.
     M_2D = weights1(D_2D.pow(-1), Psi_2D)
 
     Mherm_2D = 0.5 * (M_2D + M_2D.mH)
@@ -620,8 +523,6 @@ def generate_gabor_operators(device, a, b, image_size=224, window_type="Hann"):
     gc.collect()
     Mherm_2D = Mherm_2D.to(device)
 
-    # The factorized projection consumes (mu_M, U_M) directly, so a failed
-    # eigendecomposition leaves no usable path -- fail here rather than later.
     try:
         M64 = (Mherm_2D.to(torch.complex64) if Mherm_2D.is_complex()
                else Mherm_2D.to(torch.float64))
@@ -686,13 +587,6 @@ def _build_metrics(args):
 def generate_adversarial_examples(source_model, source_name, attacker,
                                    testloader, device, case, verbose=False, args=None):
     """Attack every test image with `source_name` and return clean/adv/labels.
-
-    The `attack` phase brackets ONLY the attacker call, exactly as
-    eval_cifar100.py does. Dataloading (JPEG decode + resize, which is not
-    cheap at 224x224), the host<->device copies and the final concatenation are
-    deliberately outside it: charging them here made the ImageNet per-sample
-    column measure something CIFAR's did not, and the two are printed side by
-    side.
     """
     print(f"\nGenerating adversarial examples using {source_name}...")
     rt = _rtlog(args)
@@ -706,17 +600,12 @@ def generate_adversarial_examples(source_model, source_name, attacker,
         adversary = AutoAttack(source_model, norm=args.aa_norm, eps=args.epsilon,
                                version=args.aa_version, device=device, verbose=verbose)
         if not timing:
-            # Default path, unchanged: AutoAttack runs over the whole set in one
-            # call and does its own internal batching. Only the collection loop
-            # moved out of the bracket.
             all_clean, all_labels = [], []
             for x, y in tqdm(testloader, desc=f"Collecting data for {source_name}"):
                 all_clean.append(x)
                 all_labels.append(y)
             x_clean = torch.cat(all_clean, dim=0)
             y_true = torch.cat(all_labels, dim=0)
-            # One batch, not the whole set: the warm-up only has to touch the
-            # kernels, and AutoAttack over 200 images is the expensive one.
             _wb = min(args.batch_size, len(y_true))
             warmup_attack(lambda: adversary.run_standard_evaluation(
                 x_clean[:_wb].to(device), y_true[:_wb].to(device), bs=_wb),
@@ -728,9 +617,6 @@ def generate_adversarial_examples(source_model, source_name, attacker,
             rt.add_samples(case, len(y_true), source=source_name)
             print(f"  Generated {len(x_clean)} adversarial examples (AutoAttack)")
             return x_clean, x_adv, y_true, None
-        # --timing: one call per image so each gets its own bracket. Per-sample
-        # results are identical -- AutoAttack's cascade is per-sample and never
-        # looks across the batch -- but the printed per-call summaries differ.
         all_clean, all_adv, all_labels = [], [], []
         for i, (x, y) in enumerate(tqdm(testloader, desc=f"Source: {source_name}")):
             x, y = x.to(device), y.to(device)
@@ -768,7 +654,6 @@ def generate_adversarial_examples(source_model, source_name, attacker,
                 x_adv, _ = attacker(x, y, random_init=False)
         rt.add_samples(case, x.shape[0], source=source_name)
         if case == 'case1':
-            # outside the bracket: a diagnostic, not part of the attack
             q_all.append(attacker.gabor_constraint(last_delta_flat).cpu())
         all_clean.append(x.cpu())
         all_adv.append(x_adv.cpu())
@@ -800,11 +685,6 @@ def generate_adversarial_examples(source_model, source_name, attacker,
 def evaluate_transferability(target_model, x_clean, x_adv, y_true,
                               metrics_evaluator, device, batch_size=16):
     target_model.eval()
-    # Collect every metric the evaluator returns. LPIPS/SSIM were previously
-    # computed and discarded. `std_*` keys are skipped on purpose: a mean of
-    # per-batch standard deviations is not the population standard deviation.
-    # Sample-weighted, not a mean of per-batch means: the final batch is usually
-    # short (8 of 16 at n=1000) and would otherwise count as much as a full one.
     tot, cnt = {}, {}
     n = len(x_clean)
     for i in range((n + batch_size - 1) // batch_size):
@@ -835,9 +715,6 @@ def evaluate_all_transferability(models_dict, attacker, metrics_evaluator,
                 continue
             with open(ckpt_path) as f:
                 cached = json.load(f)
-            # A checkpoint written by a run with a different model set would
-            # leave holes that crash matrix construction later. Only reuse a
-            # checkpoint that covers exactly the current targets.
             missing = [t for t in model_names if t not in cached]
             if missing:
                 print(f"  [resume] Ignoring stale checkpoint for {source_name} "
@@ -866,10 +743,6 @@ def evaluate_all_transferability(models_dict, attacker, metrics_evaluator,
         results[source_name] = {}
         print(f"\nSOURCE: {source_name}")
         rt = _rtlog(args)
-        # The attack phase and the sample count are opened INSIDE
-        # generate_adversarial_examples, per batch, so that dataloading and the
-        # device copies stay out of the measured attack time -- same bracket as
-        # eval_cifar100.py. Do not re-wrap the call here or it double-counts.
         x_clean, x_adv, y_true, src_stats = generate_adversarial_examples(
             models_dict[source_name], source_name, attacker,
             testloader, args.device, case, args.verbose, args=args)
@@ -982,9 +855,6 @@ def save_image_comparison(clean_images, adv_images, delta, labels,
                           save_dir, case_name, model_name, num_images=20):
     os.makedirs(save_dir, exist_ok=True)
     delta = _reshape_delta(delta, clean_images)
-    # Cap the side-by-side grid: at 4 in/column and dpi=150 a 40-image strip is
-    # a 24000 px wide PNG. Individual images are still written in full by
-    # save_individual_images().
     num_images = min(num_images, clean_images.shape[0], MAX_COMPARISON_COLUMNS)
     if num_images == 0:
         return
@@ -1155,11 +1025,6 @@ def save_gabor_spectrograms(clean_images, adv_images, delta, labels, Psi_2D,
 def generate_and_save_images(model, model_name, attacker, testloader, case, args,
                               save_dir, Psi_2D):
     num_images = args.num_images
-    # --num-images 0 turns the dump off. It re-runs the attack on a fresh batch
-    # purely to have pictures, which a cost sweep pays once per (model, case)
-    # for output it never looks at -- and for case4 it is a second full
-    # AutoAttack. The dump is unmeasured either way, so this only buys back
-    # wall-clock, never changes a number.
     if num_images <= 0:
         return
     img_dir = save_dir
@@ -1266,23 +1131,11 @@ def main():
     robust_models = {}
     standard_models = {}
 
-    # Auto-detect: names in STANDARD_PRETRAINED_NAMES → standard loader,
-    # everything else → RobustBench loader.
     std_requested = [n for n in args.models if n in STANDARD_PRETRAINED_NAMES]
     adv_requested = [n for n in args.models if n not in STANDARD_PRETRAINED_NAMES]
     print(f"\nAuto-detecting model groups from --models...")
     print(f"  Standard: {std_requested or '(none)'}")
     print(f"  Adv (RobustBench): {adv_requested or '(none)'}")
-    # Model loading happens once and is shared by every case, so it is booked
-    # against the pseudo-method "_shared" rather than charged to whichever case
-    # happens to run first.
-    # Everything a cost table needs to be auditable goes in the meta. Without
-    # the roster a runtime file cannot be told apart from one produced on a
-    # different model set, and src/aggregate_run.py sums same-(source, case)
-    # files -- which is how a stale 6-model smoke run was once folded into a
-    # 2-model case1 row unnoticed. The attack hyperparameters are here so
-    # bin/report_cost.py can derive the model-pass count from the file itself
-    # instead of trusting a manifest that may have moved on.
     rt = RuntimeLog("imagenet", device=args.device, timing=args.timing, meta={
         "a": args.a, "b": args.b, "window": args.window_type,
         "num_steps": args.num_steps,
@@ -1318,16 +1171,9 @@ def main():
     # recorded only now, once the roster is actually resolved
     rt.meta["source_models"] = sorted(all_models)
     rt.meta["n_source_models"] = len(all_models)
-    # Parameter count per model, read off the model that actually ran rather
-    # than from a table of published figures: bin/report_cost.py and
-    # bin/runtime_to_csv.py attribute cost to capacity with this, so it has to
-    # come from the same object whose forward pass was timed.
     rt.meta["model_params"] = {
         name: int(sum(p.numel() for p in m.parameters()))
         for name, m in all_models.items()}
-    # Which family each model belongs to, from the same membership the output
-    # directories use (_model_group), so a per-family aggregate never has to
-    # re-derive it from a name list that could drift out of sync.
     rt.meta["model_family"] = {
         name: ("adv_trained" if name in robust_models else "pretrained")
         for name in all_models}
@@ -1380,25 +1226,17 @@ def main():
         # ------------------------------------------------------------------
         elif case in ("case5", "case6"):
             metrics_evaluator = _build_metrics(args)
-            # Every knob that changes the attack must reach the directory name:
-            # save_dir IS checkpoint_dir, and resume only validates the target
-            # model set (see evaluate_all_transferability), so two runs sharing
-            # a path would silently reload each other's numbers.
             hp_subpath = case_hparam_token(case, args)
             label = f"{case}_{hp_subpath}"
 
             attacker = build_baseline_attacker(
                 case, list(all_models.values())[0], args, 224)
 
-            # _run_transferability_split -> evaluate_all_transferability already
-            # opens rt.phase(case, "attack") and records sample counts per source.
             _run_transferability_split(
                 robust_models, standard_models, attacker, metrics_evaluator,
                 testloader, case, args, eps_tag, hp_subpath, label,
                 args.save_heatmaps)
 
-            # Spectrograms need a Gabor frame purely for display; build the spec
-            # operator like case 4 does, without wiring it into the attack.
             (Psi_2D_spec, *_) = generate_gabor_operators(
                 args.device, args.a, args.b, 224, args.window_type)
 
@@ -1428,14 +1266,11 @@ def main():
                  eps_scale, mu_M_2D, U_M_2D, _
                  ) = generate_gabor_operators(args.device, a, b, 224, window)
 
-            # Case 1 alone uses gamma (2/3 derive their step from eps/num_steps).
             gamma, gamma_why = resolve_gamma(args)
             if case == "case1":
                 warn_if_constraint_inert(gamma, num_steps, eps_scale, epsilon,
                                          gamma_why)
 
-            # Only the hyperparameters this method actually uses; case1 gets the
-            # Gabor frame and gamma, cases 2/3 only num_steps.
             hp_subpath = case_hparam_token(
                 case, args, a=a, b=b, window=window, gamma=gamma,
                 num_steps=num_steps)
@@ -1467,14 +1302,7 @@ def main():
             torch.cuda.empty_cache()
             gc.collect()
 
-    # One raw runtime.json per run in a SHARED dir (--runtime-dir, set by
-    # run_row.py to <results root>/runtime); dataset/cases/accelerator/job id
-    # in the name so concurrent array tasks never overwrite each other.
     case_tag = "case" + "-".join(str(c) for c in args.attack_case)
-    # "timing" in the name so a batch-size-1 cost run can never be folded into
-    # a production run's totals by the aggregator
-    # start time + pid in the name because repeat local passes are otherwise
-    # identical: without them three runs collide on 'local_0' and the last wins
     rt_name = (f"runtime_imagenet_{case_tag}"
                f"{'_timing' if args.timing else ''}"
                f"_{rt.env['accelerator']}"

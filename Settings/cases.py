@@ -17,10 +17,7 @@ ATTACK_NAMES = {
 
 
 def attack_name(case):
-    """'case3', 'case3_robustbench' or '3' -> 'F-PGD'; unknown -> unchanged.
-
-    Accepts the bare manifest digit, the caseN key, and the caseN_<source>
-    compound used by bin/build_cost_matrix.py filenames.
+    """'case3', 'case3_robustbench' or '3' -> 'F-PGD'
     """
     key = str(case)
     if not key.startswith("case"):

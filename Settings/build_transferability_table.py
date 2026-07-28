@@ -2,21 +2,6 @@
 """Build transferability tables from the results.json tree.
 
     python3 src/build_transferability_table.py --results-dir results
-
-Emits, under <out>/:
-
-  matrix_<group>_<case>_<eps>_<hp>_<metric>.csv   full source x target matrix
-  summary.csv                                     one row per configuration
-
-The summary separates the two numbers that a transferability table exists to
-distinguish, and which a single mean silently merges:
-
-  white_box   the DIAGONAL, source attacking itself
-  transfer    the OFF-DIAGONAL mean, source attacking a different model
-
-Diagonal cells are excluded from `transfer` by construction. Missing cells stay
-NaN and are counted in `n_missing` rather than being treated as zeros -- a failed
-target must not look like a target the attack could not fool.
 """
 import argparse
 import csv
@@ -34,9 +19,6 @@ METRICS = ("attack_success_rate", "adversarial_accuracy", "clean_accuracy",
 
 def parse_meta(rel):
     """<run directory>/results.json -> its fields.
-
-    Delegated to run_dirs.parse_run_dir, the inverse of the run_dir_name() the
-    eval scripts write with, so the reader cannot drift from the writer.
     """
     return parse_run_path(rel)
 
@@ -103,8 +85,6 @@ def main():
                     (diag if s == t else off).append(v)
             rows.append(row)
 
-        # dataset first, matching the run directory it came from, so a matrix
-        # filename and its source directory sort next to each other.
         tag = "_".join(x for x in (meta["dataset"], meta["case"], meta["group"],
                                    meta["eps"], meta["hparams"]) if x)
         mpath = os.path.join(args.out_dir, f"matrix_{tag}_{args.metric}.csv")

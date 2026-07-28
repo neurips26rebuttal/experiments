@@ -1,22 +1,5 @@
 """
-CIFAR100 DGF-PGD Attack Evaluation from CLAUDE
-==================================
-
-Comprehensive evaluation script for CIFAR100 that integrates:
-- DGFPGDAttack (Cases 1, 2, 3)
-- AutoAttack (Case 4)
-- Baselines: SSA (Case 5) and AdvDrop (Case 6), from baselines/
-- AdversarialMetrics (30+ evaluation metrics)
-- Pretrained CIFAR100 models from RobustBench
-
-Usage (one case per run):
-    python eval_cifar100.py --case case1
-    python eval_cifar100.py --case case4                 # AutoAttack
-    python eval_cifar100.py --case case5                 # SSA baseline
-    python eval_cifar100.py --case case6 --advdrop-steps 150   # AdvDrop baseline
-
-    # Quick test
-    python eval_cifar100.py --case case1 --num-samples 100
+CIFAR100 attack script
 """
 
 import csv
@@ -35,7 +18,6 @@ import json
 import time
 from typing import Dict, List
 
-# Import attack and metrics classes
 import paths
 from transforms import *
 from dgf_pgd import DGFPGDAttack
@@ -63,10 +45,6 @@ except ImportError:
     )
 
 
-# Paper-friendly short labels for results tables and plots (raw keys →
-# display labels), mirroring eval_imagenet.DISPLAY_NAMES. Any key not listed
-# falls back to itself. AuthorYY style; same-author/same-year entries carry a
-# suffix so no two models share a label.
 DISPLAY_NAMES: Dict[str, str] = {
     # RobustBench Linf CIFAR-100 models (--model-source robustbench)
     "Addepalli2021Towards_WRN34":           "Addepalli21",
@@ -244,9 +222,7 @@ def parse_args():
     parser.add_argument(
         "--num-images", type=int, default=10, help="Number of image pairs to save"
     )
-    # No --image-dir: the samples belong to the run that produced them, so they
-    # always land in <run directory>/images/. A separate location would put
-    # them outside the one flat directory that names the run.
+    
     parser.add_argument(
         "--runtime-dir",
         type=str,
@@ -257,35 +233,15 @@ def parse_args():
 
     # Timing
     parser.add_argument(
-        "--no-amp", action="store_true",
-        help="Run case1's model call in fp32 instead of bf16 autocast "
-        "(src/dgf_pgd.py:102). Cases 2/3 and the vendored baselines are "
-        "already fp32, so the DEFAULT times the proposed method under a "
-        "faster precision than everything it is compared against; pass this "
-        "for a precision-matched cost comparison. No effect on cases 2-6.")
+        "--no-amp", action="store_true")
     parser.add_argument(
-        "--timing", action="store_true",
-        help="Cost-measurement mode: force batch size 1 so one timed bracket "
-        "is exactly one image, record every sample individually (mean/median/"
-        "std/min/max/p95 per source model, plus the raw list) and discard "
-        "--timing-warmup images first. Measures the same work on CIFAR-100 and "
-        "ImageNet, so the two per-image columns are comparable.",
+        "--timing", action="store_true"
     )
     parser.add_argument(
-        "--warmup-batches", type=int, default=1,
-        help="Batches run through the real attack and thrown away before the "
-        "timed loop starts, once per source model, so cuDNN autotuning and "
-        "lazy CUDA init never land in a measured bracket. Costs one batch of "
-        "wall-clock per model and changes no result: every RNG is restored "
-        "afterwards. 0 restores the old (contaminated) behaviour. Ignored "
-        "under --timing, which discards measured warm-up images instead.",
+        "--warmup-batches", type=int, default=1
     )
     parser.add_argument(
-        "--timing-warmup", type=int, default=5,
-        help="Images run through the real measured path and then thrown away, "
-        "so cuDNN autotuning and lazy CUDA init never land in a kept sample. "
-        "--num-samples is raised by this much so exactly --num-samples images "
-        "are measured (--timing only)",
+        "--timing-warmup", type=int, default=5
     )
 
     # Other
@@ -294,32 +250,16 @@ def parse_args():
 
     args = parser.parse_args()
 
-    # One bracket must hold exactly one image or the per-sample distribution is
-    # a distribution over batches. Forced, not merely defaulted: a --batch-size
-    # inherited from the manifest would otherwise silently invalidate the run.
     if args.timing:
         if args.batch_size != 1:
             print(f"[timing] forcing --batch-size 1 (was {args.batch_size})")
         args.batch_size = 1
         args.timing_warmup = max(0, args.timing_warmup)
 
-    # If neither case specified, run both
     if not args.case:
         print("No case specified. Running default (Case 1).")
         args.case = "case1"
 
-    # ONE flat directory per run, directly under --output-dir, named for
-    # everything that identifies it: dataset, case, model family, epsilon and
-    # the knobs this case actually reads. Two reasons it has to carry all of
-    # that rather than just the family:
-    #   - every output filename here is fixed (cifar100_results.txt, the
-    #     detailed JSON, images/), so two runs sharing a directory silently
-    #     overwrite each other;
-    #   - the tables are rebuilt from the directory NAME
-    #     (src/build_transferability_table.py), so a field missing from the name
-    #     is a field missing from the table.
-    # run_dir_name and case_hparam_token come from eval_imagenet.py so both
-    # datasets name their directories by the same rule.
     run_dir = run_dir_name("cifar100", args.model_source, args.case,
                            format_eps_tag(args.epsilon),
                            case_hparam_token(args.case, args,
@@ -328,10 +268,6 @@ def parse_args():
                                              gamma=resolve_gamma(args)[0],
                                              num_steps=args.num_steps))
 
-    # A timing run attacks a handful of images and writes the same fixed result
-    # filenames a production run does, so it needs its own directory or it
-    # overwrites a 1000-sample result with a 200-sample one. A NAME suffix, not
-    # a nested folder: the tree stays one level deep either way.
     if args.timing:
         run_dir += "_timing"
 
@@ -356,9 +292,6 @@ def load_cifar100(args):
         root=args.data_root, train=False, download=False, transform=transform
     )
 
-    # Subset if requested. --timing loads the warm-up images ON TOP of what was
-    # asked for, so "--timing --num-samples 200" measures 200 images rather
-    # than 200 minus whatever the warm-up consumed.
     n_want = args.num_samples
     if n_want is not None and getattr(args, "timing", False):
         n_want += args.timing_warmup
@@ -404,8 +337,6 @@ def load_robustbench_models(args):
         print("Install with: pip install robustbench")
         raise ImportError("robustbench is required for RobustBench models")
 
-    # Available RobustBench CIFAR100 Linf models (the weights present under
-    # models/cifar100/Linf/)
     model_names = [
         "Addepalli2021Towards_WRN34",
         "Addepalli2022Efficient_WRN_34_10",
@@ -607,16 +538,6 @@ def generate_gabor_operators_cifar100(device, a, b, window_type="Gaussian"):
 
 def _warmup_from_loader(dataloader, args, model_name, fn):
     """Warm the attack on one batch off `dataloader`, before the timed loop.
-
-    Thin adapter over eval_imagenet.warmup_attack: it takes a zero-argument
-    thunk, and every cifar loop needs the first batch moved to the device
-    first. `fn(images, labels)` is the same call the loop makes, so the warm-up
-    touches exactly the kernels the measurement will.
-
-    On cifar this matters more than on ImageNet, not less: at 32x32 the attack
-    itself is milliseconds, so a fixed multi-second first-batch cost is a far
-    larger share of the number, and the first model of the pretrained roster
-    (mobilenetv2_x0_5) is the smallest one there is.
     """
     batch = next(iter(dataloader), None)
     if batch is None:
@@ -628,12 +549,6 @@ def _warmup_from_loader(dataloader, args, model_name, fn):
 def _accumulate_transfer(models_dict, images, x_adv, labels, acc, args, run_case,
                          source=None):
     """Batchwise cross-model counts: how this source's adversarials transfer.
-
-    Forward passes only, on the x_adv the source model's attack already
-    produced -- the transferability sweep costs O(targets) inferences per
-    batch, no extra attack generation. Weighted by real batch sizes so a short
-    final batch cannot bias the averages (the icml/icml-2 np.mean-over-batches
-    version had that bias). Booked under the metrics phase.
     """
     if not models_dict or len(models_dict) < 2:
         return
@@ -651,8 +566,6 @@ def _accumulate_transfer(models_dict, images, x_adv, labels, acc, args, run_case
 
 
 def _finalize_transfer(acc):
-    """counts -> {target: {clean/adv accuracy, ASR}}. Same ASR definition as
-    icml/icml-2 (plain misclassification on adv inputs, = 1 - adv accuracy)."""
     out = {}
     for tname, a in acc.items():
         n = max(a["n"], 1)
@@ -668,7 +581,6 @@ def _finalize_transfer(acc):
 
 def plot_transferability_heatmap(matrix, model_names, title, output_path,
                                  cmap="coolwarm"):
-    """Annotated source x target heatmap, same styling as icml/icml-2."""
     plt.figure(figsize=(max(8, 1.2 * len(model_names) + 4),
                         max(6, 1.0 * len(model_names) + 3)))
     try:
@@ -697,20 +609,6 @@ def plot_transferability_heatmap(matrix, model_names, title, output_path,
 
 
 def save_transferability_reports(transfer_by_source, args):
-    """Write the icml/icml-2-style transferability reports for this run.
-
-    Into <output_dir> (i.e. next to cifar100_results.txt, per source family):
-
-        transferability_asr_heatmap.png        ASR % heatmap  (RdYlGn_r)
-        transferability_accuracy_heatmap.png   adv-accuracy % (RdYlGn)
-        transferability_asr.csv                source x target matrix
-        transferability_accuracy.csv           source x target matrix
-        transferability_detailed.json          {source: {target: metrics}}
-        transferability_stats.txt              self vs mean/std/max/min transfer
-
-    Rows = source model the attack was generated on, columns = target model it
-    is evaluated against; diagonal = the usual self-attack numbers.
-    """
     names = [s for s in transfer_by_source if transfer_by_source[s]]
     if len(names) < 2:
         return
@@ -788,12 +686,8 @@ def evaluate_model(
     if attacker is not None:
         attacker.model = model
 
-    # Cross-model transfer counts for THIS source model, filled per batch by
-    # _accumulate_transfer and reported by save_transferability_reports once
-    # every source has run.
     transfer_acc = {}
 
-    # Track if we've saved images for this model
     images_saved = False
 
     # Case 1
@@ -815,11 +709,6 @@ def evaluate_model(
                           n=images.shape[0]):
                 x_adv, eps_dgf, last_delta = attacker(images, labels, random_init=True)
             rt.add_samples("case1", images.shape[0], source=model_name)
-            # compute_all_metrics_gabor() was removed in the dead-code pass: its
-            # Gabor-norm columns duplicated what attacker.gabor_constraint()
-            # reports, and its eps_dgf/last_delta arguments went unused by every
-            # metric it actually computed. The feasibility check now lives on the
-            # attacker, so the shared metric path is the only one left.
             with rt.phase("case1", "metrics", per_sample=_t, source=model_name):
                 metrics = metrics_evaluator.compute_all_metrics(
                     model, images, x_adv, labels
@@ -870,9 +759,6 @@ def evaluate_model(
                 print(f"    Psi shape: {Psi_2D.shape}")
                 print(f"    save_dir: {args.image_dir}")
 
-                # Compute x_tilde for proper Case 1 visualization: x̃ = Ψ† S_τ(Ψx)
-                # Visualization only: any failure here must not kill the run,
-                # so fall back to x_tilde=None (spectrograms then show clean x).
                 print("  Computing x̃ = Ψ† S_τ(Ψx) for visualization...")
                 x_tilde = None
                 try:
@@ -886,7 +772,6 @@ def evaluate_model(
                     PsiT_bc = Psi_2D.t().view(1, 1, n, N)
                     z = torch.matmul(Psi_bc, images.to(dtype=Psi_2D.dtype))
                     z = torch.matmul(z, PsiT_bc)
-                    z = soft_thresholding(z, args.tau)
 
                     Psi_plus_2D = Psi_plus_2D.to(torch.complex128).to(args.device)
 
@@ -1013,7 +898,7 @@ def evaluate_model(
                         "case2",
                         model_name,
                         args.num_images,
-                        x_tilde=None,  # Pass x_tilde for Case 2
+                        x_tilde=None,  
                     )
                     print("  ✓ Spectrograms saved successfully for Case 2")
                 except Exception as e:
@@ -1105,8 +990,7 @@ def evaluate_model(
         results["case3"] = aggregate_metrics(case3_metrics)
         print_summary(results["case3"], "Case 3")
 
-    # Case 4: AutoAttack. The adversary is built per model (it wraps the model
-    # directly), so the shared attacker object is unused here.
+    # Case 4: AutoAttack
     elif run_case == "case4":
         print(f"\nCase 4: AutoAttack ({args.aa_version}, {args.aa_norm})")
         print("-" * 80)
@@ -1174,9 +1058,7 @@ def evaluate_model(
         results["case4"] = aggregate_metrics(case4_metrics)
         print_summary(results["case4"], "Case 4")
 
-    # Cases 5 and 6: vendored baselines (SSA / AdvDrop). Same loop shape as
-    # cases 2/3; the attacker is a baseline object, not the DGF-PGD one, so its
-    # .case is already fixed and delta is recovered as x_adv - x.
+    # Cases 5 and 6: vendored baselines (SSA / AdvDrop)
     elif run_case in ("case5", "case6"):
         pretty = {"case5": "SSA (Spectrum Simulation Attack)",
                   "case6": "AdvDrop (InfoDrop)"}[run_case]
@@ -1420,17 +1302,6 @@ def save_individual_images(
         f"  Saved {num_images} clean and {num_images} adversarial images to: {save_dir}"
     )
 
-
-def soft_thresholding(z: torch.Tensor, tau: float) -> torch.Tensor:
-    """Complex soft-threshold S_tau: shrink |z| by tau, keep the phase.
-
-    S_tau(z) = z * max(|z| - tau, 0) / |z|, elementwise. Used only to build
-    the x_tilde = Psi^+ S_tau(Psi x) visualization for case 1.
-    """
-    mag = torch.abs(z)
-    return z * torch.clamp(mag - tau, min=0.0) / (mag + 1e-12)
-
-
 def save_gabor_spectrograms(
     clean_images: torch.Tensor,
     adv_images: torch.Tensor,
@@ -1445,22 +1316,6 @@ def save_gabor_spectrograms(
 ):
     """
     Save Gabor magnitude spectrograms for clean and adversarial images
-
-    Displays:
-    - Row 1: x_tilde (or clean if None) | Adversarial Image | Perturbation δ
-    - Row 2: Clean Gabor |Ψx_tilde|| Adv Gabor |Ψx_adv|| Delta Gabor |Ψδ|
-
-    Args:
-        clean_images: Clean images (B, C, H, W) in [0, 1]
-        adv_images: Adversarial images (B, C, H, W) in [0, 1]
-        delta: Perturbation returned by attack (B, C, H, W)
-        labels: True labels (B,)
-        Psi: Gabor frame operator (N, n)
-        save_dir: Directory to save spectrograms
-        case_name: 'case1' or 'case2'
-        model_name: Name of the model
-        num_images: Number of spectrograms to save
-        x_tilde: Soft-thresholded reconstruction for Case 1 (optional)
     """
 
     # Check if delta needs reshaping
@@ -1643,14 +1498,6 @@ def save_gabor_spectrograms(
 def aggregate_metrics(metrics_list):
     """
     Aggregate metrics across batches
-
-    The new evaluation_metrics.py returns per-batch statistics:
-    - mean_l2_norm, std_l2_norm (mean and std within each batch)
-    - mean_gabor_frame_norm, std_gabor_frame_norm
-    - lpips_mean, lpips_std
-    - ssim_mean, ssim_std
-
-    This function aggregates these across all batches by averaging.
     """
     aggregated = {}
     all_keys = set()
@@ -1902,8 +1749,6 @@ def main():
         "timing_warmup": args.timing_warmup if args.timing else 0,
         "warmup_batches": 0 if args.timing else args.warmup_batches,
         "num_samples": args.num_samples,
-        # attack hyperparameters so bin/report_cost.py can derive the model-pass
-        # count from the file itself rather than trusting a manifest
         "ssa_N": args.ssa_N, "ssa_steps": args.ssa_steps,
         "ssa_rho": args.ssa_rho, "ssa_sigma": args.ssa_sigma,
         "ssa_momentum": args.ssa_momentum,
@@ -1912,25 +1757,14 @@ def main():
         "advdrop_block_size": args.advdrop_block_size,
         "advdrop_lr": args.advdrop_lr,
         "aa_version": args.aa_version, "aa_norm": args.aa_norm,
-        # the roster: without it a runtime file cannot be told apart from one
-        # produced on a different model set
         "source_models": sorted(models_dict),
         "n_source_models": len(models_dict),
-        # Parameter count per model, read off the models that actually ran.
-        # bin/report_cost.py and bin/runtime_to_csv.py attribute cost to
-        # capacity with this, so it must come from the same objects whose
-        # forward passes were timed -- same field, same meaning, as
-        # eval_imagenet.py records.
         "model_params": {name: int(sum(p.numel() for p in m.parameters()))
                          for name, m in models_dict.items()},
-        # Same key, same vocabulary as eval_imagenet.py, so one aggregate can
-        # group both datasets: robustbench models are the adv-trained family.
         "model_family": {
             name: ("adv_trained" if args.model_source == "robustbench"
                    else "pretrained")
             for name in models_dict},
-        # so the aggregator can group by source without inferring it from the
-        # file's path -- required now that runtime files live in one shared dir
         "model_source": args.model_source, "case": args.case})
     args._rtlog = rt
 
@@ -1939,9 +1773,8 @@ def main():
          mu_M_2D, U_M_2D, cond_S) = generate_gabor_operators_cifar100(
             args.device, a, b, window)
 
-    # Same rule as eval_imagenet.py: --gamma if given, else the original 0.1.
     gamma, gamma_why = resolve_gamma(args)
-    args.gamma = gamma  # save_results prints the resolved value
+    args.gamma = gamma 
     if args.case == "case1":
         warn_if_constraint_inert(gamma, args.num_steps, eps_scale, epsilon, gamma_why)
 
@@ -1950,14 +1783,9 @@ def main():
         print(f"Case {case[-1]}...")
         # Initialize attacker
         if case == "case4":
-            # AutoAttack wraps each model directly; evaluate_model builds one
-            # adversary per model. The Gabor operators above are still built
-            # and passed along for spectrogram display only.
             print("\nUsing AutoAttack (adversary built per model)...")
             attacker = None
         elif case in ("case5", "case6"):
-            # Vendored baselines. The Gabor operators above are still built and
-            # passed to evaluate_model for spectrogram display only.
             print(f"\nInitializing baseline attacker ({case})...")
             attacker = build_baseline_attacker(
                 case, list(models_dict.values())[0], args, image_size=32)
@@ -2027,15 +1855,6 @@ def main():
         except Exception as e:
             print(f"  ✗ ERROR saving transferability reports: {e}")
 
-        # One raw file per run in a SHARED runtime dir (--runtime-dir, set by
-        # run_row.py to <results root>/runtime), so case/source identify the
-        # file, not the directory it is buried in. src/aggregate_run.py folds
-        # these into runtime_<dataset>_<accel>.{json,csv} at the root.
-        # "timing" in the name so a batch-size-1 cost run can never be folded
-        # into a production run's totals by the aggregator
-        # start time + pid in the name because repeat local passes are otherwise
-        # identical: without them three runs collide on 'local_0' and the last
-        # one wins
         rt_name = (f"runtime_cifar100_{args.case}_{args.model_source}"
                    f"{'_timing' if args.timing else ''}"
                    f"_{rt.env['accelerator']}"

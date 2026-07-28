@@ -1,21 +1,6 @@
 #!/usr/bin/env python3
 """
 Download all models required by eval_imagenet.py and eval_cifar100.py.
-
-Everything lands INSIDE the repo's models/ tree so that jobs running on
-compute nodes without internet access find every weight already on disk:
-
-  RobustBench imagenet  -> MODELS_DIR/imagenet/Linf/
-  RobustBench cifar100  -> MODELS_DIR/cifar100/Linf/
-  Standard pretrained   -> MODELS_DIR/torch_hub/checkpoints/  (torchvision)
-  chenyaofo backbones   -> MODELS_DIR/torch_hub/              (hub repo + ckpts)
-
-Run this once on a node WITH internet (e.g. the login/prepost node), then the
-eval scripts -- which point torch.hub at MODELS_DIR/torch_hub via
-paths.point_torch_hub() -- never touch the network.
-
-  python3 src/download_models.py                  # everything
-  python3 src/download_models.py --dataset cifar100
 """
 import argparse
 import os
@@ -220,11 +205,6 @@ def download_robustbench_models(models_dir: str, dataset: str, model_names,
 
 def download_cifar100_hub_backbones():
     """Cache the chenyaofo hub repo + every backbone checkpoint locally.
-
-    torch.hub.load caches the GitHub repo snapshot and the weight file under
-    torch.hub.get_dir(), which main() has already pointed at
-    MODELS_DIR/torch_hub -- so after this, eval_cifar100.py --model-source
-    pretrained works with no network at all.
     """
     print(f"\n{'='*60}")
     print(f"  Downloading {len(CIFAR100_HUB_BACKBONES)} CIFAR100 hub backbones")
@@ -313,9 +293,7 @@ def parse_args():
 def main():
     args = parse_args()
     os.makedirs(args.models_dir, exist_ok=True)
-
-    # All torch.hub traffic (torchvision checkpoints, chenyaofo repo+weights)
-    # goes into <models-dir>/torch_hub -- the same place the eval scripts look.
+    
     hub = paths.point_torch_hub(args.models_dir)
     print(f"torch.hub cache: {hub}")
 

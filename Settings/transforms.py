@@ -30,8 +30,6 @@ def DGT(L, a, b, window):
     m_range = torch.arange(int(L / b))
     l_range = torch.arange(L)
 
-    # indexing="ij" is the current default; stated explicitly to silence the
-    # torch deprecation warning. Behaviour is unchanged.
     n_grid, m_grid, l_grid = torch.meshgrid(n_range, m_range, l_range, indexing="ij")
 
     shifted_l_grid = (l_grid - n_grid * a) % L
@@ -90,14 +88,6 @@ def diag_weights_from_mc_row_sums(
     estimator="mc",
 ):
     """Diagonal weights from row sums of the normalised frame.
-
-    estimator:
-      "mc"     u_hat = (N/m) * sum over m indices drawn WITH REPLACEMENT.
-               Historical default. Note m = min(num_j, N) caps the sample at N,
-               so raising num_j cannot reduce the variance; the measured relative
-               error of u_hat is ~100%, which is why D is not reproducible.
-      "exact"  u_hat = A.sum(0), the exact quantity the MC form estimates.
-               Deterministic, no RNG, and costs one pass over N rows.
     """
     A = Psi.to(torch.complex64) if not torch.is_complex(Psi) else Psi
     A = A / A.norm(dim=1, keepdim=True).clamp_min(eps_norm)

@@ -4,27 +4,6 @@
                           baselines/SSA/attack.py
   case 6 -> AdvDropAttack: AdvDrop / InfoDrop (Duan et al., ICCV 2021)
                           baselines/AdvDrop/infod_sample.py
-
-Why vendored rather than imported from baselines/:
-  * the originals hardcode `.cuda()` throughout (phi_diff, the 8x8 basis, the
-    gaussian noise), so they crash on CPU and on a non-default GPU;
-  * they carry heavy deps the eval harness does not need or have on the compute
-    nodes -- pretrainedmodels, torchattacks, their own Normalize/loader;
-  * they assume a model that takes [0,255]/[0,1]+own-Normalize input, whereas
-    every model in eval_imagenet.py / eval_cifar100.py already wraps its own
-    normalization and takes x in [0, 1].
-The DCT / 8x8-JPEG math below is a faithful, device-safe port of
-baselines/SSA/dct.py and baselines/AdvDrop/{compression,decompression,utils}.py;
-the attack loops reproduce the originals' active code path.
-
-Both classes match the calling convention the eval scripts already use for the
-DGF-PGD attacker on cases 2/3, so they slot into the existing transferability
-loop unchanged:
-
-    attacker.model = source_model
-    x_adv, aux = attacker(x, y, random_init=False)      # x, x_adv in [0, 1]
-
-`aux` is always None (kept for tuple-unpacking symmetry with the other cases).
 """
 from __future__ import annotations
 
@@ -89,29 +68,7 @@ def _idct_2d(X, norm=None):
 
 
 class SSAAttack:
-    """Spectrum Simulation Attack -- case 5.
-
-    Reproduces the active path of ``Spectrum_Simulation_Attack`` in
-    baselines/SSA/attack.py: at each of ``num_steps`` iterations the gradient is
-    averaged over ``N`` spectral copies of the input (add Gaussian noise, take the
-    2-D DCT, multiply by a random spectral mask, invert), then an L-inf sign step
-    is taken and the result is clipped to the eps-ball around the clean image.
-    The optional MI / DI / TI-FGSM lines in the original are commented out there;
-    we keep them off to match its reported "SSA" numbers, but expose ``momentum``
-    so MI-FGSM can be switched on.
-
-    Parity note: upstream hardcodes ``num_iter = 10`` (it ignores even its own
-    ``--num_iter_set`` flag), so exact reproduction of the original scenario
-    requires ``num_steps=10`` -- which is what the manifest passes. The step
-    size is ``epsilon / num_steps``, matching upstream's ``eps / num_iter``.
-
-    Notes on adaptation:
-      * the original operates on 299x299 with its own Normalize(0.5, 0.5); here the
-        model already normalizes and takes x in [0, 1], so we drop that layer and
-        read the spatial size from the input;
-      * ``sigma`` stays in 0-255 units (``sigma/255`` std) exactly as upstream;
-      * gradients use autograd.grad, not loss.backward(), so no parameter grads
-        are accumulated on the model.
+    """Spectrum Simulation Attack -- case 5.]
     """
 
     def __init__(self, model, epsilon, num_steps=10, N=20, rho=0.5, sigma=16.0,
@@ -172,10 +129,6 @@ class SSAAttack:
 
 def _dct_8x8_basis(device, dtype):
     """(8,8,8,8) forward-DCT basis and the (8,8) alpha scale, cached per device.
-
-    Built in float64 and cast, exactly as upstream builds them with numpy
-    doubles and assigns into a float32 array -- so the tables are bit-identical
-    to baselines/AdvDrop/compression.py's.
     """
     idx = torch.arange(8, device=device, dtype=torch.float64)
     x, u = idx.view(8, 1), idx.view(1, 8)
@@ -237,30 +190,6 @@ def _phi_diff(x, alpha):
 
 class AdvDropAttack:
     """AdvDrop / InfoDrop -- case 6.
-
-    Port of ``InfoDrop`` from baselines/AdvDrop/infod_sample.py. The perturbation
-    is not an additive L-inf ball: per 8x8 DCT block and channel, a learnable
-    quantization table (bounded in ``[5, q_size]``) is optimized to *drop*
-    information while flipping the prediction. The table is trained with Adam and
-    a per-step sign update; ``alpha`` anneals the soft-quantizer toward a hard
-    rounding over the run.
-
-    UNTARGETED only. The original's targeted branch is dropped rather than
-    carried unused: nothing in this repo runs a targeted attack, and a targeted
-    switch that no configuration sets is a path no result ever exercised.
-
-    Adaptation: the original works on pixels in [0, 255] and its model carried a
-    Normalize that divides by 255. Here the harness's model takes [0, 1], so we
-    scale x up to [0, 255] for the DCT math and feed ``rgb/255`` to the model
-    (unclamped during optimization, exactly as the original's Normalize layer
-    does; only the returned image is clamped). ``epsilon`` does not apply to
-    this attack and is ignored (accepted only so the constructor matches the
-    others).
-
-    ``batch_size`` mirrors the original constructor's argument: the early-stop
-    success rate is ``count / batch_size`` -- so, like upstream, a smaller
-    final batch can never trigger the early break. Pass None to fall back to
-    the actual batch length.
     """
 
     def __init__(self, model, epsilon=None, steps=150, block_size=8, q_size=40,
@@ -358,9 +287,6 @@ class AdvDropAttack:
 
 def build_baseline_attacker(case, model, args, image_size):
     """Return the case-5/6 attacker, reading its hyperparameters off `args`.
-
-    `image_size` is accepted for interface symmetry with the DGF operators; the
-    attacks read the spatial size from each input batch, so both 224 and 32 work.
     """
     if case == "case5":
         return SSAAttack(

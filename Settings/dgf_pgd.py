@@ -37,10 +37,6 @@ class DGFPGDAttack:
         self.case = case
         self.device = device
         self.verbose = verbose
-        # Case 1's forward runs under bf16 autocast; cases 2/3 and the vendored
-        # baselines run fp32. That asymmetry makes the proposed method cheaper
-        # than its baselines in any wall-clock comparison, so a cost measurement
-        # needs to be able to switch it off. Default True = unchanged behaviour.
         self.amp = amp
 
         self.Psi_2D = Psi_2D.to(device)
@@ -83,9 +79,7 @@ class DGFPGDAttack:
         n = self.n
 
         epsilon_dgf = self.eps_scale * self.epsilon
-
-        # M = Psi^H D Psi is always (L, L) with L == H, so the 2D-factorized
-        # (Kronecker) path is the only reachable one. Assert rather than branch.
+        
         if self.M.shape[0] != H:
             raise ValueError(
                 f"Expected factorized M of shape ({H},{H}), got {tuple(self.M.shape)}"
@@ -93,8 +87,6 @@ class DGFPGDAttack:
 
         x_tilde = x
 
-        # Case 1 always starts from delta = 0. `random_init` is kept in the
-        # signature for dispatch compatibility with cases 2/3 but is unused here.
         delta = torch.zeros((B, C, H, W), device=self.device, dtype=x.dtype)
         last_delta_flat = delta.reshape(K, n)
 
@@ -115,12 +107,10 @@ class DGFPGDAttack:
             delta_flat = delta.reshape(K, n).detach()
 
             g2 = grad_flat.reshape(K, H, W).to(self.D_inv_1.dtype)
-            # A g, with A applied separably (Kronecker: (A (x) A) vec(g) = A g A^T)
             DgDT = torch.einsum("ij,kjp,lp->kil", self.D_inv_1, g2, self.D_inv_1)
             dual_sq = (g2.conj() * DgDT).real.sum(dim=(-2, -1))
             dual_norm = torch.sqrt(dual_sq + 1e-10)
 
-            # Ascent step: delta + gamma * g / sqrt(g^T D_inv_1 g).
             delta_flat = delta_flat + self.gamma * (grad_flat / dual_norm.unsqueeze(-1))
 
             with torch.no_grad():
@@ -149,13 +139,6 @@ class DGFPGDAttack:
 
     @torch.no_grad()
     def gabor_constraint(self, delta_flat: torch.Tensor) -> torch.Tensor:
-        """
-        q(delta) = sum_pq mu_p mu_q |z_pq|^2 with z = U^H delta U^*.
-
-        This is exactly the quadratic form that project_factorized_2d constrains
-        to <= eps_dgf^2, so it is the correct quantity for a feasibility check.
-        Diagnostic only -- it never feeds back into the attack.
-        """
         K = delta_flat.shape[0]
         d2 = delta_flat.reshape(K, self.H, self.W).to(self.U_M.dtype)
         z = torch.einsum("ip,kij,jq->kpq", self.U_M.conj(), d2, self.U_M.conj())
@@ -179,8 +162,6 @@ class DGFPGDAttack:
             outputs = self.model(x + delta_prime)
             loss = self.loss_fn(outputs, y)
 
-            # autograd.grad gives the same gradient as loss.backward() but does
-            # not accumulate into model parameter .grad buffers.
             grad = torch.autograd.grad(loss, delta_prime)[0]
 
             delta_prime = (
@@ -201,7 +182,7 @@ class DGFPGDAttack:
     ) -> torch.Tensor:
         """
         Case 3: Fourier-based PGD (F-PGD)
-        Implements Eq. (7)-(10) from 'A Fourier Perspective of Feature Extraction and Adversarial Robustness' (IJCAI-24).
+        Implements Eq. (7)-(10) from 'A Fourier Perspective of Feature Extraction and Adversarial Robustness'
         """
 
         def _nyquist_radius(h, w):

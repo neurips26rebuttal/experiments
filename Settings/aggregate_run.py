@@ -2,38 +2,6 @@
 """Aggregate one results tree into files AT ITS ROOT.
 
     python3 src/aggregate_run.py results
-
-The tree is flat: one directory per run, named by run_dirs.run_dir_name(), plus
-one shared runtime/ directory --
-
-    <root>/runtime/runtime_*.json                     raw, source in the json meta
-    <root>/<run dir>/<dataset>_results_detailed.json  per-run metrics
-
-so the run's dataset, case, model family and epsilon are recovered from the
-directory NAME with run_dirs.parse_run_dir(), the inverse of what wrote it.
-
-This script walks the tree and writes, per dataset, directly in <root>:
-
-    runtime_<dataset>_<accel>.csv / .json    rows = (source, case)  x  phase
-    timing_<dataset>_<accel>.csv / .json     rows = (model, case, phase), ms/image
-    metrics_<dataset>.csv / .json            rows = (source, case, model) x metric
-
-The accelerator stays in the runtime FILENAME so a100 and h100 numbers can
-never be silently mixed. Repeated runs of the same (source, case) sum their
-seconds and sample counts; attack_ms_per_sample stays comparable.
-
-Runs made with --timing are kept in a SEPARATE table and excluded from the
-runtime_* one. They are batch-size-1 measurements whose seconds mean something
-different, and they carry the raw per-image durations, so the timing table
-reports a real distribution (mean/median/std/min/max/p95) per source model
-rather than a ratio of two totals.
-
-Metric columns are the union over all rows (case4/AutoAttack rows have no
-eps_dgf, for instance); a metric a row does not have is left empty, not 0.
-
-The imagenet transferability results.json files have a different shape and
-their own aggregator (src/aggregate_results.py); this script only picks up
-the *_results_detailed.json summaries.
 """
 import argparse
 import csv
@@ -74,9 +42,6 @@ def _iter_runtime_json(root):
     for dirpath, _dirs, files in os.walk(root):
         if os.path.basename(dirpath) != "runtime":
             continue
-        # New layout: all raw files in <root>/runtime, source recorded in the
-        # json meta. Old layout: .../<case_eps>/<source>/runtime/, source is
-        # the parent directory. Runs without either (imagenet) get "all".
         parent = os.path.basename(os.path.dirname(dirpath))
         is_central = os.path.normpath(dirpath) == central
         for fname in sorted(files):
@@ -96,10 +61,6 @@ def _iter_runtime_json(root):
 
 def collect_runtime(root):
     """(ds, accel) -> (source, case) -> summed phases/samples/run count.
-
-    --timing runs are excluded: they are batch-size-1 cost measurements, and
-    summing their seconds into a production run's totals would corrupt both.
-    They are aggregated separately by collect_timing().
     """
     agg = defaultdict(lambda: defaultdict(lambda: {
         **{p: 0.0 for p in PHASES}, "n_samples": 0, "runs": 0}))
@@ -125,12 +86,6 @@ def collect_runtime(root):
 
 def collect_timing(root):
     """(ds, accel) -> (source_model, case, phase) -> concatenated raw ms.
-
-    Keyed on the SOURCE MODEL, not the model family: at batch size 1 the whole
-    point is that a ResNet-18's per-image cost is never averaged into a
-    WideResNet's. Raw millisecond lists are concatenated across array tasks and
-    the statistics recomputed from the pooled list, so splitting a measurement
-    over several jobs gives exactly the same numbers as running it in one.
     """
     agg = defaultdict(lambda: defaultdict(list))
     runs = defaultdict(set)
@@ -245,8 +200,6 @@ def collect_metrics(root):
             if not fname.endswith("_results_detailed.json"):
                 continue
             ds = fname[: -len("_results_detailed.json")]
-            # Flat tree: one run per directory, every field in its NAME.
-            # parse_run_dir is the inverse of what the eval scripts wrote.
             run_dir = os.path.basename(dirpath)
             rd = parse_run_dir(run_dir)
             source, case_hint, eps_tag = rd["group"], rd["case"], rd["eps"]
